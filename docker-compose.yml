@@ -1,0 +1,428 @@
+name: multicloud-service-mesh
+
+# Local development stack.
+#
+# Profiles:
+#   split  - all five service/sidecar pairs run in separate containers.
+#   bundle - Render-side components run as four supervised processes plus the
+#            ingress dispatcher inside ONE render-web container.
+#
+# Common AWS-side components always run. Use:
+#   docker compose --profile split up -d --build
+#   docker compose --profile bundle up -d --build
+#
+# Only the API Gateway (8080), dashboard (3000), Control Plane (127.0.0.1:4000)
+# and the optional Render ingress (127.0.0.1:8081) are published. PostgreSQL,
+# Redis, Cache API, sidecars and application services stay on the private
+# Docker network.
+#
+# Cloud deployment adds deploy/nginx/nginx.conf through
+# docker-compose.deploy.yml. Nginx terminates TLS and is the only public entry
+# point; the application containers stay on this private network.
+
+x-app: &app
+  image: mesh-node-app:local
+  build:
+    context: .
+    dockerfile: Dockerfile
+  env_file:
+    - .env
+  restart: unless-stopped
+  networks:
+    - mesh
+  volumes:
+    # Public CA certificate for verified PostgreSQL TLS. Empty during local
+    # development; populated by deploy/tls/gen-certs.sh for cloud deployment.
+    - ./certs:/etc/mesh-certs:ro
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: mesh-postgres
+    profiles: ['aws', 'split', 'bundle']
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
+      AWS_DB_NAME: ${AWS_DB_NAME}
+      AWS_DB_USER: ${AWS_DB_USER}
+      AWS_DB_PASSWORD: ${AWS_DB_PASSWORD}
+      RENDER_DB_NAME: ${RENDER_DB_NAME}
+      RENDER_DB_USER: ${RENDER_DB_USER}
+      RENDER_DB_PASSWORD: ${RENDER_DB_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - ./db/schemas:/schemas:ro
+    networks:
+      - mesh
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$$POSTGRES_USER" -d postgres']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: mesh-redis
+    profiles: ['aws', 'split', 'bundle']
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    command:
+      - sh
+      - -c
+      - exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
+    networks:
+      - mesh
+    healthcheck:
+      test: ['CMD-SHELL', 'redis-cli --no-auth-warning -a "$$REDIS_PASSWORD" ping | grep -q PONG']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  control-plane:
+    <<: *app
+    container_name: mesh-control-plane
+    profiles: ['aws', 'split', 'bundle']
+    command: ['node', 'control-plane/index.js']
+    environment:
+      MESH_MODE: ${MESH_MODE:-split}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      # Loopback by default. Set CONTROL_PLANE_BIND=0.0.0.0 only for a
+      # deployment where Render must reach the Control Plane directly.
+      - '${CONTROL_PLANE_BIND:-127.0.0.1}:4000:4000'
+    healthcheck:
+      test: ['CMD', 'node', 'scripts/healthcheck.js', 'http://127.0.0.1:4000/health']
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 20s
+
+  cache-api:
+    <<: *app
+    container_name: mesh-cache-api
+    profiles: ['aws', 'split', 'bundle']
+    command: ['node', 'cache-api/index.js']
+    depends_on:
+      redis:
+        condition: service_healthy
+      control-plane:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', 'scripts/healthcheck.js', 'http://127.0.0.1:4100/health']
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 20s
+
+  book-service:
+    <<: *app
+    container_name: mesh-book-service
+    profiles: ['aws', 'split', 'bundle']
+    command: ['node', 'services/book-service/index.js']
+    depends_on:
+      postgres:
+        condition: service_healthy
+      cache-api:
+        condition: service_healthy
+      control-plane:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', 'scripts/healthcheck.js', 'http://127.0.0.1:4101/health']
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 20s
+
+  book-primary-sidecar:
+    <<: *app
+    container_name: mesh-book-primary-sidecar
+    profiles: ['aws', 'split', 'bundle']
+    command: ['node', 'sidecars/book-primary-sidecar/index.js']
+    environment:
+      BOOK_SERVICE_URL: http://book-service:4101
+    depends_on:
+      book-service:
+        condition: service_healthy
+      control-plane:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', 'scripts/healthcheck.js', 'http://127.0.0.1:5101/health']
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 20s
+
+  borrow-service:
+    <<: *app
+    container_name: mesh-borrow-service
+    profiles: ['aws', 'split', 'bundle']
+    command: ['node', 'services/borrow-service/index.js']
+    environment:
+      MEMBER_SIDECAR_URL: ${MEMBER_SIDECAR_URL:-http://member-sidecar:5105}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      cache-api:
+        condition: service_healthy
+      control-plane:
+        condition: service_healthy
+      book-primary-sidecar:
+        condition: service_healthy
+      notification-sidecar:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', 'scripts/healthcheck.js', 'http://127.0.0.1:4102/health']
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 20s
+
+  borrow-sidecar:
+    <<: *app
+    container_name: mesh-borrow-sidecar
+    profiles: ['aws', 'split', 'bundle']
+    command: ['node', 'sidecars/borrow-sidecar/index.js']
+    environment:
+      BORROW_SERVICE_URL: http://borrow-service:4102
+    depends_on:
+      borrow-service:
+        condition: service_healthy
+      control-plane:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', 'scripts/healthcheck.js', 'http://127.0.0.1:5102/health']
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 20s
+
+  notification-service:
+    <<: *app
+    container_name: mesh-notification-service
+    profiles: ['aws', 'split', 'bundle']
+    command: ['node', 'services/notification-service/index.js']
+    depends_on:
+      postgres:
+        condition: service_healthy
+      control-plane:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', 'scripts/healthcheck.js', 'http://127.0.0.1:4103/health']
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 20s
+
+  notification-sidecar:
+    <<: *app
+    container_name: mesh-notification-sidecar
+    profiles: ['aws', 'split', 'bundle']
+    command: ['node', 'sidecars/notification-sidecar/index.js']
+    environment:
+      NOTIFICATION_SERVICE_URL: http://notification-service:4103
+    depends_on:
+      notification-service:
+        condition: service_healthy
+      control-plane:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', 'scripts/healthcheck.js', 'http://127.0.0.1:5103/health']
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 20s
+
+  api-gateway:
+    <<: *app
+    container_name: mesh-api-gateway
+    profiles: ['aws', 'split', 'bundle']
+    command: ['node', 'gateway/index.js']
+    environment:
+      MEMBER_SIDECAR_URL: ${MEMBER_SIDECAR_URL:-http://member-sidecar:5105}
+      BOOK_REPLICA_URL: ${BOOK_REPLICA_URL:-http://book-replica-sidecar:5104}
+    depends_on:
+      control-plane:
+        condition: service_healthy
+      book-primary-sidecar:
+        condition: service_healthy
+      borrow-sidecar:
+        condition: service_healthy
+      notification-sidecar:
+        condition: service_healthy
+    ports:
+      # GATEWAY_BIND=127.0.0.1 keeps the gateway off the public interface in
+      # cloud deployment; docker-compose.deploy.yml also enforces loopback.
+      - '${GATEWAY_BIND:-0.0.0.0}:8080:8080'
+    healthcheck:
+      test: ['CMD', 'node', 'scripts/healthcheck.js', 'http://127.0.0.1:8080/health']
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 20s
+
+  dashboard:
+    image: mesh-dashboard:local
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    container_name: mesh-dashboard
+    profiles: ['aws', 'split', 'bundle']
+    env_file:
+      - .env
+    restart: unless-stopped
+    networks:
+      - mesh
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    ports:
+      # Cloud deployment keeps the dashboard on loopback; use an SSH tunnel.
+      - '${DASHBOARD_BIND:-0.0.0.0}:3000:3000'
+    healthcheck:
+      test: ['CMD', 'node', 'scripts/healthcheck.js', 'http://127.0.0.1:3000/health']
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # split profile: Render-side components in separate containers (local only)
+  # ---------------------------------------------------------------------------
+
+  book-replica-service:
+    <<: *app
+    profiles: ['split']
+    container_name: mesh-book-replica-service
+    command: ['node', 'services/book-replica-service/index.js']
+    depends_on:
+      control-plane:
+        condition: service_healthy
+      cache-api:
+        condition: service_healthy
+      api-gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', 'scripts/healthcheck.js', 'http://127.0.0.1:4104/health']
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 25s
+
+  book-replica-sidecar:
+    <<: *app
+    profiles: ['split']
+    container_name: mesh-book-replica-sidecar
+    command: ['node', 'sidecars/book-replica-sidecar/index.js']
+    environment:
+      BOOK_REPLICA_SERVICE_URL: http://book-replica-service:4104
+      BOOK_REPLICA_SIDECAR_ADVERTISE_URL: http://book-replica-sidecar:5104
+    depends_on:
+      book-replica-service:
+        condition: service_healthy
+      control-plane:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', 'scripts/healthcheck.js', 'http://127.0.0.1:5104/health']
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 20s
+
+  member-service:
+    <<: *app
+    profiles: ['split']
+    container_name: mesh-member-service
+    command: ['node', 'services/member-service/index.js']
+    depends_on:
+      postgres:
+        condition: service_healthy
+      cache-api:
+        condition: service_healthy
+      control-plane:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', 'scripts/healthcheck.js', 'http://127.0.0.1:4105/health']
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 20s
+
+  member-sidecar:
+    <<: *app
+    profiles: ['split']
+    container_name: mesh-member-sidecar
+    command: ['node', 'sidecars/member-sidecar/index.js']
+    environment:
+      MEMBER_SERVICE_URL: http://member-service:4105
+      MEMBER_SIDECAR_ADVERTISE_URL: http://member-sidecar:5105
+    depends_on:
+      member-service:
+        condition: service_healthy
+      control-plane:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', 'scripts/healthcheck.js', 'http://127.0.0.1:5105/health']
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # bundle profile: one Render Free container with 4 supervised processes + ingress
+  # ---------------------------------------------------------------------------
+
+  render-web:
+    profiles: ['bundle']
+    image: mesh-render-web:local
+    build:
+      context: .
+      dockerfile: render/Dockerfile
+    container_name: mesh-render-web
+    env_file:
+      - .env
+    environment:
+      MESH_MODE: bundle
+      PORT: 8081
+      RENDER_INGRESS_PORT: 8081
+      RENDER_PUBLIC_BASE_URL: http://render-web:8081
+      BOOK_REPLICA_SIDECAR_ADVERTISE_URL: http://render-web:8081/book-replica
+      MEMBER_SIDECAR_ADVERTISE_URL: http://render-web:8081/member
+      MEMBER_SIDECAR_URL: http://render-web:8081/member
+      BOOK_REPLICA_URL: http://render-web:8081/book-replica
+    restart: unless-stopped
+    networks:
+      - mesh
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      control-plane:
+        condition: service_healthy
+      cache-api:
+        condition: service_healthy
+      api-gateway:
+        condition: service_healthy
+    ports:
+      - '127.0.0.1:8081:8081'
+    healthcheck:
+      test: ['CMD', 'node', 'scripts/healthcheck.js', 'http://127.0.0.1:8081/health']
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+
+volumes:
+  postgres-data:
+    name: mesh-postgres-data
+
+networks:
+  mesh:
+    name: mesh-network

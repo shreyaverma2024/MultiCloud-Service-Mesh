@@ -1,0 +1,92 @@
+# AWS EC2 deployment override.
+#
+# This file is self-contained for the recommended deployment. It:
+#   - adds one free Nginx TLS proxy (the only public entry point);
+#   - enables PostgreSQL TLS and requires hostssl connections;
+#   - keeps the gateway, dashboard, Control Plane, Cache API and PostgreSQL on
+#     loopback or the private Docker network.
+#
+# Public ports after this override:
+#   8443 -> API Gateway   (TLS)
+#   8444 -> Control Plane (TLS, token-protected)
+#   8445 -> Cache API     (TLS, x-api-key protected)
+#   5433 -> PostgreSQL    (TLS, verified end to end)
+#
+# Usage on the EC2 instance:
+#
+#   ./deploy/tls/gen-certs.sh <aws-public-host> <aws-public-ip>
+#   docker compose -f docker-compose.yml -f docker-compose.deploy.yml \
+#     --profile aws up -d --build
+#
+# Do not also pass docker-compose.postgres-tls.yml. This file already enables
+# PostgreSQL TLS; using both would duplicate the same mounts and settings.
+#
+# See docs/AWS_ACADEMY.md, docs/DEPLOYMENT.md, and docs/SECURITY.md.
+
+services:
+  # These management ports stay on loopback. Nginx reaches the containers over
+  # the private Docker network, so they never need a public bind.
+  api-gateway:
+    ports: !override
+      - '127.0.0.1:8080:8080'
+
+  dashboard:
+    ports: !override
+      - '127.0.0.1:3000:3000'
+
+  control-plane:
+    ports: !override
+      - '127.0.0.1:4000:4000'
+
+  # PostgreSQL is never published. Nginx terminates client TLS on 5433 and then
+  # opens a second TLS connection to PostgreSQL that verifies the server
+  # certificate against the self-managed CA.
+  postgres:
+    entrypoint: ['/bin/sh', '/opt/mesh/tls-entrypoint.sh']
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/var/lib/postgresql/tls/server.crt
+      - -c
+      - ssl_key_file=/var/lib/postgresql/tls/server.key
+    environment:
+      MESH_REQUIRE_DB_TLS: 'true'
+    volumes:
+      - ./certs:/etc/mesh-certs:ro
+      - ./db/tls-entrypoint.sh:/opt/mesh/tls-entrypoint.sh:ro
+
+  # Free, open-source TLS terminator. Only these ports are reachable from the
+  # EC2 security group. Restrict 8444/8445/5433 to the Render outbound ranges
+  # plus your administrator IP where your lab allows it.
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: mesh-tls-proxy
+    profiles: ['aws']
+    restart: unless-stopped
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+      control-plane:
+        condition: service_healthy
+      cache-api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    ports:
+      - '8443:8443'
+      - '8444:8444'
+      - '8445:8445'
+      - '5433:5433'
+    networks:
+      - mesh
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -O - http://127.0.0.1:8080/healthz | grep -q ok']
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 15s

@@ -1,0 +1,46 @@
+# Standalone PostgreSQL TLS override.
+#
+# The recommended cloud deployment uses docker-compose.deploy.yml, which already
+# includes these PostgreSQL TLS settings plus the Nginx TLS proxy. This file is
+# kept for a deployment that wants PostgreSQL TLS WITHOUT the Nginx proxy.
+#
+# Do not combine this file with docker-compose.deploy.yml: both enable the same
+# mounts and would duplicate configuration.
+#
+# 1. Generate a free self-managed CA and server certificate on the EC2 host:
+#
+#      ./deploy/tls/gen-certs.sh <aws-public-host> <aws-public-ip>
+#
+# 2. Set these values in .env (not in Git):
+#
+#      DB_SSL=true
+#      DB_SSL_REJECT_UNAUTHORIZED=true
+#      DB_SSL_CA_PATH=/etc/mesh-certs/ca.crt
+#      MESH_REQUIRE_DB_TLS=true
+#
+# 3. Start PostgreSQL with TLS:
+#
+#      docker compose -f docker-compose.yml \
+#        -f docker-compose.postgres-tls.yml \
+#        --profile aws up -d --build
+#
+# PostgreSQL still has no published port in this file. A client must reach it
+# through the private Docker network or a separate TLS proxy. The certs/
+# directory is git-ignored; never commit the private keys.
+
+services:
+  postgres:
+    entrypoint: ['/bin/sh', '/opt/mesh/tls-entrypoint.sh']
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/var/lib/postgresql/tls/server.crt
+      - -c
+      - ssl_key_file=/var/lib/postgresql/tls/server.key
+    environment:
+      MESH_REQUIRE_DB_TLS: 'true'
+    volumes:
+      - ./certs:/etc/mesh-certs:ro
+      - ./db/tls-entrypoint.sh:/opt/mesh/tls-entrypoint.sh:ro

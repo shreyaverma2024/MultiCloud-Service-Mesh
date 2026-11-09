@@ -1,0 +1,9 @@
+{
+  "name": "@mesh/shared",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "dependencies": {
+    "pg": "^8.13.1"
+  }
+}

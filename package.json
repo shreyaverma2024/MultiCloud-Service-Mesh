@@ -1,0 +1,38 @@
+{
+  "name": "multicloud-service-mesh",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Multi-Cloud Service Mesh - Data Plane Sidecar (AWS Academy EC2 + Render Free)",
+  "type": "commonjs",
+  "workspaces": [
+    "shared",
+    "services/*",
+    "sidecars/*",
+    "gateway",
+    "control-plane",
+    "cache-api",
+    "render",
+    "dashboard"
+  ],
+  "scripts": {
+    "secrets": "node scripts/init-secrets.js",
+    "stack:split": "scripts\\start-split.cmd",
+    "stack:bundle": "scripts\\start-bundle.cmd",
+    "stack:down": "scripts\\stop.cmd",
+    "test:unit": "jest --config tests/jest.config.js --runInBand",
+    "test:integration": "node tests/integration/run.js",
+    "test": "npm run test:unit && npm run test:integration",
+    "traffic": "node scripts/generate-traffic.js",
+    "failure": "node scripts/simulate-failure.js",
+    "render:kill": "node scripts/kill-render-process.js",
+    "db:backup": "node scripts/db-backup.js",
+    "db:restore": "node scripts/db-restore.js"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^7.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

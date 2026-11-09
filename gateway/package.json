@@ -1,0 +1,13 @@
+{
+  "name": "@mesh/api-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@mesh/shared": "*",
+    "express": "^4.21.2"
+  }
+}

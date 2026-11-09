@@ -1,0 +1,59 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+secrets/
+certs/
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
+
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build output
+dist/
+build/
+coverage/
+.vite/
+
+# Logs and runtime files
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.pid
+*.seed
+
+# Local data and generated artifacts
+data/
+backups/
+pgdata/
+redis-data/
+*.sqlite
+*.db
+tmp/
+temp/
+tests/integration/reports/
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local AI agent and development files
+AGENTS.md
+opencode.json
+SESSION_NOTES.md
+TASKS.md
+SPEC.md
+
+*.dump
+*.backup

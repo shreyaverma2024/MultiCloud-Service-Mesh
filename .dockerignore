@@ -1,0 +1,52 @@
+# Dependencies
+node_modules
+**/node_modules
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+secrets/
+certs/
+**/*.pem
+**/*.key
+**/*.crt
+
+# Build output
+dist/
+build/
+coverage/
+.vite/
+
+# Logs and temporary files
+logs/
+*.log
+*.pid
+tmp/
+temp/
+
+# Local data and backups
+backups/
+pgdata/
+redis-data/
+data/
+*.sqlite
+*.db
+
+# Git and editor files
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Tests, docs, and project metadata not needed in images
+tests/
+docs/
+README.md
+AGENTS.md
+SPEC.md
+TASKS.md
+SESSION_NOTES.md
