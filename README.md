@@ -10,9 +10,7 @@ The mesh is designed for **AWS Academy EC2 + Render Free** and runs locally with
 Docker Compose. It requires **zero personal spending** and does not use any paid
 service.
 
-> Status: local implementation and integration testing are complete. Deployment is
-> intentionally left to the user; no GitHub, AWS, or Render account was accessed by
-> the coding agent.
+> Status: The project implementation, local integration testing, and multi-cloud deployment using AWS Academy EC2 and Render Free have been completed. The deployed system demonstrates service discovery, weighted traffic routing, health monitoring, fault handling, authenticated cross-cloud communication, Redis caching, and centralized monitoring. Local execution is also supported through Docker Compose.
 
 ## Architecture at a glance
 
